@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from app import ClipRecorder, TrainingProgress, clean_sign_name, forget_extracted, number_clips, trim_clip
+from app import (ClipRecorder, TrainingProgress, clean_sign_name, forget_extracted, number_clips, save_photo,
+                 trim_clip)
 from detect import STABLE_PREDICTIONS, SignDetector, draw_output_field, draw_probability_bars
 from extract_dataset import choose_split
 from landmarks import SEQUENCE_LENGTH
@@ -71,6 +72,17 @@ def check_split_is_70_15_15(root=Path("split_check")):
     assert counts == {"train": 7, "val": 2, "test": 1}, counts
 
 
+def check_save_photo():
+    frame = np.zeros((120, 160, 3), np.uint8)
+    hand = SimpleNamespace(left_hand_landmarks=[object()], right_hand_landmarks=[])
+    no_hand = SimpleNamespace(left_hand_landmarks=[], right_hand_landmarks=[])
+    assert save_photo("a", frame, hand) == Path("images/a/a_001.jpg")
+    assert save_photo("a", frame, hand) == Path("images/a/a_002.jpg")
+    assert save_photo("a", frame, no_hand) is None
+    assert save_photo("ä", frame, hand) == Path("images/ä/ä_001.jpg")  # non-ASCII folder still works
+    assert cv2.imdecode(np.fromfile("images/a/a_001.jpg", np.uint8), cv2.IMREAD_COLOR).shape == frame.shape
+
+
 def check_training_progress_reads_train_py_output():
     progress = TrainingProgress()
     output = ["14 train / 4 val / 2 test samples, labels: ['danke', 'hallo']",
@@ -110,6 +122,7 @@ if __name__ == "__main__":
     check_record_trim_forget()
     check_number_clips()
     check_split_is_70_15_15()
+    check_save_photo()
     check_training_progress_reads_train_py_output()
     check_detector_reports_each_sign_once()
     check_overlay_draws()

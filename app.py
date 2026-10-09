@@ -5,6 +5,8 @@
 Tabs:
   Record  - webcam with face/hand landmarks. Pick or type a sign, then Record / Stop.
             Clips are saved to videos/<sign>/<sign>_001.mp4, _002, ..., the layout extract_dataset.py reads.
+  Alphabet - webcam with landmarks. Pick a letter, show its hand shape, press Snap (or Space).
+            Photos are saved to images/<letter>/<letter>_001.jpg, _002, ...; a frame without a hand isn't saved.
   Clips  - every clip grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
             Opening the tab renumbers each sign's clips to <sign>_001.mp4, ... (covers clips copied in by hand).
   Training - "Build dataset + Train" runs extract_dataset.py and then train.py. Live charts of accuracy and
@@ -15,6 +17,7 @@ import os
 import queue
 import re
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -35,7 +38,8 @@ from landmarks import HolisticTracker, draw_face_and_hands, has_hands
 
 VIDEOS_DIR = Path("videos")
 DATASET_DIR = Path("dataset")
-TARGET_CLIPS = 30           # clips per sign the README recommends
+IMAGES_DIR = Path("images")
+TARGET_SAMPLES = 30         # clips per sign (photos per letter) the README recommends
 DISPLAY_SIZE = (560, 420)   # largest size a frame is shown at; keeps the window on a laptop screen
 RED = (0, 0, 255)
 
@@ -55,15 +59,16 @@ def list_clips(sign):
     return sorted((VIDEOS_DIR / sign).glob("*.mp4"))
 
 
-def clip_name(sign, number):
-    return VIDEOS_DIR / sign / f"{sign}_{number:03d}.mp4"  # 3 digits: name order stays number order up to 999
+def numbered_path(folder, number, suffix):
+    """videos/hallo, 1, '.mp4' -> videos/hallo/hallo_001.mp4"""
+    return folder / f"{folder.name}_{number:03d}{suffix}"  # 3 digits: name order stays number order up to 999
 
 
-def next_clip_path(sign):
-    number = len(list_clips(sign)) + 1
-    while clip_name(sign, number).exists():  # a gap left by a clip copied in by hand
+def next_numbered_path(folder, suffix):
+    number = len(list(folder.glob(f"*{suffix}"))) + 1
+    while numbered_path(folder, number, suffix).exists():  # a gap left by a file copied in by hand
         number += 1
-    return clip_name(sign, number)
+    return numbered_path(folder, number, suffix)
 
 
 def number_clips(sign):
@@ -72,7 +77,8 @@ def number_clips(sign):
 
     Everything first moves to a temporary name, so no rename can land on a clip that hasn't moved yet
     (hallo_002 -> hallo_001 while the old hallo_001 is still there)."""
-    moves = [(clip, clip_name(sign, number)) for number, clip in enumerate(list_clips(sign), start=1)]
+    moves = [(clip, numbered_path(VIDEOS_DIR / sign, number, ".mp4"))
+             for number, clip in enumerate(list_clips(sign), start=1)]
     moves = [(clip, target) for clip, target in moves if clip != target]
     staged = []
     for clip, target in moves:
@@ -118,6 +124,17 @@ def trim_clip(path, first, last):
     temporary = Path(tempfile.gettempdir()) / f"trim_{path.name}"
     write_mp4(temporary, kept, fps)
     shutil.move(temporary, path)
+
+
+def save_photo(letter, frame, results):
+    """Save the raw webcam frame as images/<letter>/<letter>_001.jpg, _002, ...
+    Returns the path, or None if no hand is visible: a letter photo without a hand teaches nothing."""
+    if not has_hands(results):
+        return None
+    path = next_numbered_path(IMAGES_DIR / letter, ".jpg")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(cv2.imencode(".jpg", frame)[1].tobytes())  # cv2.imwrite can't write to non-ASCII paths (ä)
+    return path
 
 
 def forget_extracted(path):
@@ -176,7 +193,7 @@ class ClipRecorder:
         self._frames = None
         if not frames:
             return None
-        path = next_clip_path(self._sign)
+        path = next_numbered_path(VIDEOS_DIR / self._sign, ".mp4")
         path.parent.mkdir(parents=True, exist_ok=True)
         fps = min(max(len(frames) / seconds, 1.0), 60.0)  # OpenCV silently writes nothing at absurd rates
         write_mp4(path, frames, fps)
@@ -311,7 +328,7 @@ class RecordTab(ttk.Frame):
 
     def _update_count(self):
         sign = clean_sign_name(self._sign.get())
-        self._count.configure(text=f"{len(list_clips(sign))}/{TARGET_CLIPS} clips" if sign else "")
+        self._count.configure(text=f"{len(list_clips(sign))}/{TARGET_SAMPLES} clips" if sign else "")
 
 
 class TrainingTab(ttk.Frame):
@@ -406,6 +423,56 @@ class TrainingTab(ttk.Frame):
         self._canvas.draw_idle()  # redraws once when Tk is idle, however many epochs arrived
 
 
+class AlphabetTab(ttk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent, padding=8)
+        self._frame = self._results = None  # latest raw webcam frame and its tracking, for snap()
+
+        controls = ttk.Frame(self)
+        controls.pack(fill="x")
+        ttk.Label(controls, text="Letter:").pack(side="left")
+        self._letter = ttk.Combobox(controls, values=list(string.ascii_uppercase), width=6)
+        self._letter.set("A")
+        self._letter.pack(side="left", padx=4)
+        self._letter.bind("<<ComboboxSelected>>", lambda _: self._letter_chosen())
+        self._letter.bind("<Return>", lambda _: self._letter_chosen())
+        self._letter.bind("<KeyRelease>", lambda _: self._update_count())
+        ttk.Button(controls, text="📷 Snap", command=self.snap).pack(side="left", padx=4)
+        self._count = ttk.Label(controls)
+        self._count.pack(side="left", padx=8)
+
+        self._video = ttk.Label(self)
+        self._video.pack(pady=6)
+        self._status = ttk.Label(self, text="Show the letter's hand shape, then press Snap or Space.")
+        self._status.pack(fill="x")
+        self._update_count()
+
+    def show_camera_frame(self, frame, results):
+        self._frame, self._results = frame.copy(), results  # copy: the photo is saved without landmarks
+        draw_face_and_hands(frame, results)
+        show_frame(self._video, frame)
+
+    def snap(self):
+        letter = clean_sign_name(self._letter.get())
+        if not letter:
+            self._status.configure(text="Type a letter first.")
+            return
+        if self._frame is None:
+            return
+        path = save_photo(letter, self._frame, self._results)
+        self._status.configure(text=f"Saved {path}" if path else "No hand found - not saved.")
+        self._update_count()
+
+    def _letter_chosen(self):
+        self._update_count()
+        self.focus_set()  # out of the letter box, so Space snaps instead of typing a space
+
+    def _update_count(self):
+        letter = clean_sign_name(self._letter.get())
+        photos = len(list((IMAGES_DIR / letter).glob("*.jpg"))) if letter else 0
+        self._count.configure(text=f"{photos}/{TARGET_SAMPLES} photos" if letter else "")
+
+
 class ClipsTab(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent, padding=8)
@@ -453,7 +520,7 @@ class ClipsTab(ttk.Frame):
         self._tree.delete(*self._tree.get_children())
         for sign in list_signs():
             clips = list_clips(sign)
-            node = self._tree.insert("", "end", text=f"{sign}   ({len(clips)}/{TARGET_CLIPS})", open=True)
+            node = self._tree.insert("", "end", text=f"{sign}   ({len(clips)}/{TARGET_SAMPLES})", open=True)
             for clip in clips:
                 self._tree.insert(node, "end", iid=str(clip), text=clip.name, values=(f"{clip_seconds(clip):.1f} s",))
 
@@ -642,18 +709,26 @@ class SignLanguageApp:
         self._notebook.enable_traversal()  # Ctrl+Tab / Ctrl+Shift+Tab switch tabs
         self._detect = DetectTab(self._notebook, self._log)
         self._record = RecordTab(self._notebook)
+        self._alphabet = AlphabetTab(self._notebook)
         self._clips = ClipsTab(self._notebook)
         self._training = TrainingTab(self._notebook, on_trained=self._detect.model_changed)
         self._notebook.add(self._record, text="Record")
+        self._notebook.add(self._alphabet, text="Alphabet")
         self._notebook.add(self._clips, text="Clips")
         self._notebook.add(self._training, text="Training")
         self._notebook.add(self._detect, text="Detect")
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        root.bind("<space>", self._on_space)
         root.protocol("WM_DELETE_WINDOW", self._close)
         self._tick()
 
     def _current_tab(self):
         return self._notebook.nametowidget(self._notebook.select())
+
+    def _on_space(self, event):
+        # Not while typing (Combobox is an Entry) or on a focused button (Space already presses it).
+        if self._current_tab() is self._alphabet and not isinstance(event.widget, (ttk.Entry, ttk.Button)):
+            self._alphabet.snap()
 
     def _on_tab_changed(self, _event):
         tab = self._current_tab()
