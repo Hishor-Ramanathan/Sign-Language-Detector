@@ -5,9 +5,10 @@
 Tabs:
   Record  - webcam with face/hand landmarks. Pick or type a sign, then Record / Stop.
             Clips are saved to videos/<sign>/<sign>_001.mp4, _002, ..., the layout extract_dataset.py reads.
-            "Build dataset + Train" runs extract_dataset.py and then train.py; the status line shows the score.
-  Clips   - every clip grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
+  Clips  - every clip grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
             Opening the tab renumbers each sign's clips to <sign>_001.mp4, ... (covers clips copied in by hand).
+  Training - "Build dataset + Train" runs extract_dataset.py and then train.py. Live charts of accuracy and
+            loss per epoch (train vs val), the best epoch, then the test score per sign.
   Detect  - live detection with the output field, same as detect.py.
 """
 import os
@@ -24,6 +25,8 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 import cv2
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
 from detect import DetectionLog, load_detector
@@ -216,15 +219,43 @@ class TrainingJob:
         return process.wait() == 0
 
 
+class TrainingProgress:
+    """The numbers in train.py's output lines, collected for the Training tab's charts."""
+    _EPOCH = re.compile(r"epoch (\d+)/\d+  accuracy (\d+)%  loss ([\d.]+)  \|  val accuracy (\d+)%  val loss ([\d.]+)")
+    _BEST = re.compile(r"best epoch (\d+)")
+    _PER_SIGN = re.compile(r"  (\S+): (\d+/\d+)$")
+
+    def __init__(self):
+        self.epochs, self.accuracy, self.loss, self.val_accuracy, self.val_loss = [], [], [], [], []
+        self.best_epoch = None
+        self.test_score = ""  # "Test accuracy 88% (7/8 correct)   danke 4/4   hallo 3/4"
+
+    def read(self, line):
+        """Take in one output line. Returns True if it was a score line."""
+        if match := self._EPOCH.match(line):
+            epoch, accuracy, loss, val_accuracy, val_loss = match.groups()
+            self.epochs.append(int(epoch))
+            self.accuracy.append(int(accuracy) / 100)
+            self.loss.append(float(loss))
+            self.val_accuracy.append(int(val_accuracy) / 100)
+            self.val_loss.append(float(val_loss))
+        elif match := self._BEST.match(line):
+            self.best_epoch = int(match[1])
+        elif line.startswith("test accuracy"):
+            self.test_score = line.replace("test", "Test", 1)
+        elif self.test_score and (match := self._PER_SIGN.match(line)):
+            self.test_score += f"   {match[1]} {match[2]}"
+        else:
+            return False
+        return True
+
+
 # --- tabs ---------------------------------------------------------------------------------------
 
 class RecordTab(ttk.Frame):
-    def __init__(self, parent, on_trained):
+    def __init__(self, parent):
         super().__init__(parent, padding=8)
-        self._on_trained = on_trained
         self._recorder = ClipRecorder()
-        self._job = TrainingJob()
-        self._score = ""  # latest score line from train.py, kept for the "done" status
 
         controls = ttk.Frame(self)
         controls.pack(fill="x")
@@ -237,15 +268,11 @@ class RecordTab(ttk.Frame):
         self._record_button.pack(side="left", padx=4)
         self._count = ttk.Label(controls)
         self._count.pack(side="left", padx=8)
-        self._train_button = ttk.Button(controls, text="Build dataset + Train", command=self._start_training)
-        self._train_button.pack(side="right")
 
         self._video = ttk.Label(self)
         self._video.pack(pady=6)
         self._status = ttk.Label(self, text="Type a new sign or pick one, then press Record.")
         self._status.pack(fill="x")
-        self._log = tk.Text(self, height=6, state="disabled")
-        self._log.pack(fill="both", expand=True, pady=(6, 0))
 
     def show_camera_frame(self, frame, results):
         if self._recorder.is_recording:
@@ -286,34 +313,97 @@ class RecordTab(ttk.Frame):
         sign = clean_sign_name(self._sign.get())
         self._count.configure(text=f"{len(list_clips(sign))}/{TARGET_CLIPS} clips" if sign else "")
 
-    def _start_training(self):
+
+class TrainingTab(ttk.Frame):
+    """Runs the training job and shows its progress: live train-vs-val charts, then the test score."""
+    TRAIN_COLOR, VAL_COLOR = "#1f77b4", "#ff7f0e"  # matplotlib's default blue and orange
+
+    def __init__(self, parent, on_trained):
+        super().__init__(parent, padding=8)
+        self._on_trained = on_trained
+        self._job = TrainingJob()
+        self._progress = TrainingProgress()
+
+        controls = ttk.Frame(self)
+        controls.pack(fill="x")
+        self._train_button = ttk.Button(controls, text="Build dataset + Train", command=self._start)
+        self._train_button.pack(side="left")
+        self._status = ttk.Label(controls, text="Press 'Build dataset + Train' once each sign has its clips.")
+        self._status.pack(side="left", padx=12)
+
+        # Figure, not pyplot: pyplot keeps global state and can open windows of its own.
+        figure = Figure(figsize=(9.6, 3.4), dpi=100, layout="constrained")
+        self._accuracy_chart, self._loss_chart = figure.subplots(1, 2)
+        self._canvas = FigureCanvasTkAgg(figure, master=self)
+        self._canvas.get_tk_widget().pack(fill="both", expand=True, pady=6)
+        self._draw_charts()
+
+        self._test_score = ttk.Label(self, font=("Segoe UI", 11, "bold"))
+        self._test_score.pack(fill="x")
+        self._log = tk.Text(self, height=6, state="disabled")
+        self._log.pack(fill="both", pady=(6, 0))
+
+    def _start(self):
         if self._job.running:
             return
+        self._progress = TrainingProgress()
+        self._draw_charts()
+        self._test_score.configure(text="")
+        self._log.configure(state="normal")
+        self._log.delete("1.0", "end")
+        self._log.configure(state="disabled")
         self._train_button.configure(state="disabled")
-        self._status.configure(text="Building dataset and training... (this can take a few minutes)")
-        self._score = "no score"
+        self._status.configure(text="Building dataset... (new clips are tracked first, this can take a while)")
         self._job.start()
 
-    def poll_training(self):
+    def poll(self):
+        """Move the job's new output lines into the log and charts. Called from the app's main loop."""
+        scores_changed = False
         while True:
             try:
                 line = self._job.lines.get_nowait()
             except queue.Empty:
-                return
+                break
             if line is None:
-                self._train_button.configure(state="normal")
-                self._status.configure(text=f"Training done, {self._score} - open the Detect tab."
-                                       if self._job.succeeded else "Training failed - see the log below.")
-                if self._job.succeeded:
-                    self._on_trained()
+                self._finish()
                 continue
-            if line.startswith(("epoch ", "test accuracy")):  # score lines printed by train.py
-                self._score = line
+            if self._progress.read(line) and line.startswith("epoch "):
                 self._status.configure(text=f"Training... {line}")
+            scores_changed |= line.startswith(("epoch ", "best epoch"))
             self._log.configure(state="normal")
             self._log.insert("end", line + "\n")
             self._log.see("end")
             self._log.configure(state="disabled")
+        if scores_changed:
+            self._draw_charts()
+
+    def _finish(self):
+        self._train_button.configure(state="normal")
+        if not self._job.succeeded:
+            self._status.configure(text="Training failed - see the log below.")
+            return
+        self._status.configure(text="Training done - open the Detect tab.")
+        self._test_score.configure(text=self._progress.test_score)
+        self._on_trained()
+
+    def _draw_charts(self):
+        progress = self._progress
+        for chart, title, train, val in ((self._accuracy_chart, "Accuracy", progress.accuracy, progress.val_accuracy),
+                                         (self._loss_chart, "Loss", progress.loss, progress.val_loss)):
+            chart.clear()
+            chart.set_title(title)
+            chart.set_xlabel("epoch")
+            chart.grid(alpha=0.3)
+            chart.plot(progress.epochs, train, label="train", color=self.TRAIN_COLOR)
+            chart.plot(progress.epochs, val, label="val", color=self.VAL_COLOR)
+            if progress.best_epoch:
+                chart.axvline(progress.best_epoch, color="gray", linestyle="--",
+                              label=f"best epoch {progress.best_epoch}")
+            chart.set_xlim(1, max(len(progress.epochs), 10))
+            chart.legend(loc="lower right" if chart is self._accuracy_chart else "upper right")
+        self._accuracy_chart.set_ylim(0, 1.02)
+        self._accuracy_chart.yaxis.set_major_formatter(lambda value, _: f"{value:.0%}")
+        self._canvas.draw_idle()  # redraws once when Tk is idle, however many epochs arrived
 
 
 class ClipsTab(ttk.Frame):
@@ -521,7 +611,7 @@ class DetectTab(ttk.Frame):
             self._needs_load = False
         if self._detector is None:
             self._status.configure(text="No trained model yet: record clips in the Record tab, then press "
-                                        "'Build dataset + Train'.")
+                                        "'Build dataset + Train' in the Training tab.")
         else:
             self._detector.reset()  # frames from before the tab switch would mix into the next prediction
             self._status.configure(text="")  # the overlay already lists every sign
@@ -539,7 +629,7 @@ class DetectTab(ttk.Frame):
 # --- app ----------------------------------------------------------------------------------------
 
 class SignLanguageApp:
-    """One webcam and one tracker shared by the Record and Detect tabs; the Clips tab plays files."""
+    """One webcam and one tracker shared by the camera tabs; the Clips and Training tabs don't use the camera."""
 
     def __init__(self, root):
         self._root = root
@@ -551,10 +641,12 @@ class SignLanguageApp:
         self._notebook.pack(fill="both", expand=True)
         self._notebook.enable_traversal()  # Ctrl+Tab / Ctrl+Shift+Tab switch tabs
         self._detect = DetectTab(self._notebook, self._log)
-        self._record = RecordTab(self._notebook, on_trained=self._detect.model_changed)
+        self._record = RecordTab(self._notebook)
         self._clips = ClipsTab(self._notebook)
+        self._training = TrainingTab(self._notebook, on_trained=self._detect.model_changed)
         self._notebook.add(self._record, text="Record")
         self._notebook.add(self._clips, text="Clips")
+        self._notebook.add(self._training, text="Training")
         self._notebook.add(self._detect, text="Detect")
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         root.protocol("WM_DELETE_WINDOW", self._close)
@@ -576,11 +668,11 @@ class SignLanguageApp:
 
     def _tick(self):
         tab = self._current_tab()
-        if tab is not self._clips:  # the Clips tab doesn't need the camera
+        if tab not in (self._clips, self._training):  # these two don't need the camera
             ok, frame = self._camera.read()  # blocks until the next frame, which paces this loop
             if ok:
                 tab.show_camera_frame(frame, self._tracker.process(frame, time.monotonic() * 1000))
-        self._record.poll_training()
+        self._training.poll()
         self._root.after(10, self._tick)
 
     def _close(self):

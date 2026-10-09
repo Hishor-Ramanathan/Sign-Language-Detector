@@ -52,12 +52,13 @@ and no video or landmarks are uploaded. Once the model file exists, everything w
 python app.py
 ```
 
-One window with three tabs (Ctrl+Tab switches between them):
+One window with four tabs (Ctrl+Tab switches between them):
 
 | Tab | What you do there |
 |---|---|
-| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_001.mp4`, `_002`, …; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. **Build dataset + Train** runs `extract_dataset.py` and `train.py` and shows their output below the video; the status line shows the latest epoch score, then the test accuracy. |
+| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_001.mp4`, `_002`, …; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. |
 | **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it. Opening the tab renumbers every sign's clips to `<sign>_001.mp4`, `_002`, … in name order (closing gaps after a delete, and naming clips copied in from a phone); each clip's `.npy` is renamed with it. |
+| **Training** | **Build dataset + Train** runs `extract_dataset.py` and `train.py`. Two live charts, **Accuracy** and **Loss**, draw the train line (blue) and the val line (orange) epoch by epoch; the status line shows the latest epoch score. When training ends a dashed line marks the best epoch (the one that's saved) and the test score appears below the charts, per sign: `Test accuracy 88% (7/8 correct)   danke 4/4   hallo 3/4`. The log underneath has the full output. Train climbing while val falls back is overfitting; early stopping picks the epoch before it. |
 | **Detect** | Live detection with the output field, same as `detect.py`. Detections go to the console and `detections.csv`. |
 
 Sign names are cleaned into folder names: `Guten Tag` becomes `guten_tag`. A recording stops by itself after 20 s.
@@ -184,5 +185,5 @@ A sign only counts as detected after it wins 10 predictions in a row with confid
 | `extract_dataset.py` | MP4s → labelled `.npy` dataset |
 | `train.py` | dataset → `model.keras` + `labels.txt` |
 | `detect.py` | webcam/MP4 → landmarks + output field + console + CSV |
-| `app.py` | Record / Clips / Detect tabs in one window |
+| `app.py` | Record / Clips / Training / Detect tabs in one window |
 | `test_app.py` | smoke checks: `python test_app.py` |

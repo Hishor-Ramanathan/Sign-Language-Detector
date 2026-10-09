@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from app import ClipRecorder, clean_sign_name, forget_extracted, number_clips, trim_clip
+from app import ClipRecorder, TrainingProgress, clean_sign_name, forget_extracted, number_clips, trim_clip
 from detect import STABLE_PREDICTIONS, SignDetector, draw_output_field, draw_probability_bars
 from extract_dataset import choose_split
 from landmarks import SEQUENCE_LENGTH
@@ -71,6 +71,19 @@ def check_split_is_70_15_15(root=Path("split_check")):
     assert counts == {"train": 7, "val": 2, "test": 1}, counts
 
 
+def check_training_progress_reads_train_py_output():
+    progress = TrainingProgress()
+    output = ["14 train / 4 val / 2 test samples, labels: ['danke', 'hallo']",
+              "epoch 1/500  accuracy 4%  loss 0.935  |  val accuracy 83%  val loss 0.651",
+              "epoch 2/500  accuracy 87%  loss 0.646  |  val accuracy 83%  val loss 0.445",
+              "best epoch 2 (val accuracy 83%)",
+              "test accuracy 75% (3/4 correct)", "  danke: 1/2", "  hallo: 2/2", "saved model.keras and labels.txt"]
+    assert [progress.read(line) for line in output] == [False, True, True, True, True, True, True, False]
+    assert progress.epochs == [1, 2] and progress.accuracy == [0.04, 0.87] and progress.val_loss == [0.651, 0.445]
+    assert progress.best_epoch == 2
+    assert progress.test_score == "Test accuracy 75% (3/4 correct)   danke 1/2   hallo 2/2"
+
+
 def check_detector_reports_each_sign_once():
     no_landmarks = SimpleNamespace(pose_landmarks=[], left_hand_landmarks=[], right_hand_landmarks=[], face_landmarks=[])
     always_hallo = lambda batch, training: np.array([[0.9, 0.1]])
@@ -97,6 +110,7 @@ if __name__ == "__main__":
     check_record_trim_forget()
     check_number_clips()
     check_split_is_70_15_15()
+    check_training_progress_reads_train_py_output()
     check_detector_reports_each_sign_once()
     check_overlay_draws()
     print("all checks passed")
