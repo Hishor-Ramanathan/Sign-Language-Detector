@@ -17,7 +17,8 @@ the current MediaPipe **Tasks API** (`HolisticLandmarker`). The old `mp.solution
 project uses was retired in 2023 and is not in mediapipe releases after 0.10.21.
 
 ```
-videos/<sign>/*.mp4  --extract_dataset.py-->  dataset/{train,val,test}/<sign>/*.npy  --train.py-->  model.keras + labels.txt  --detect.py-->  output field
+videos/<sign>/*.mp4
+images/<letter>/*.jpg  --extract_dataset.py-->  dataset/{train,val,test}/<sign>/*.npy  --train.py-->  model.keras + labels.txt  --detect.py-->  output field
 ```
 
 ## Status
@@ -58,8 +59,8 @@ One window with four tabs (Ctrl+Tab switches between them). Each tab is one modu
 | Tab | What you do there |
 |---|---|
 | **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_<your tag>_001.mp4`, `_002`, … and uploaded to the team repo in the background; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. |
-| **Alphabet** | Photos of fingerspelled letters. Pick a letter (A–Z, or type one like `Ä`), show its hand shape, press **📷 Snap** or **Space**. Next to the camera the tab shows `references/<letter>.jpg` (or `.png`) as a guide to the hand shape, if there is one; `references/` is in `.gitignore` because such pictures are usually someone else's. The photo is saved to `images/<letter>/<letter>_001.jpg`, `_002`, … without the landmark drawing; the counter shows photos out of the 30 target. A frame with no hand found isn't saved. Letters that move (J, Z, Ä, Ö, Ü, SCH in DGS) are better recorded as clips in the Record tab. What's inside `images/` is in `.gitignore`, like `videos/`. Photos aren't used for training yet. |
-| **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it, and the change goes to the team repo. Only the clip's owner (the tag in the file name) can trim or delete it. **⟳ Sync with team** fetches the team's clips and uploads yours (see below). |
+| **Alphabet** | Photos of fingerspelled letters. Pick a letter (A–Z, or type one like `Ä`), show its hand shape, press **📷 Snap** or **Space**. Next to the camera the tab shows `references/<letter>.jpg` (or `.png`) as a guide to the hand shape, if there is one; `references/` is in `.gitignore` because such pictures are usually someone else's. The photo is saved to `images/<letter>/<letter>_001.jpg`, `_002`, … without the landmark drawing; the counter shows photos and clips out of the 30 target. A frame with no hand found isn't saved. Letters that move (J, Z, Ä, Ö, Ü, SCH in DGS) are better recorded as clips: **● Record** / **■ Stop** saves one to `videos/<letter>/` and uploads it, just like the Record tab. What's inside `images/` is in `.gitignore`, like `videos/`. `extract_dataset.py` turns each photo into a training sample (the one frame repeated 30 times), so one model learns letters from photos and clips. |
+| **Clips** | Every clip and photo, grouped by sign, with its length (`photo` for a photo). Select one to watch it (a photo shows as a one-frame clip): **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it, and the change goes to the team repo. Only the clip's owner (the tag in the file name) can trim or delete it. **⟳ Sync with team** fetches the team's clips and uploads yours (see below). |
 | **Detect** | Live detection with the output field, same as `detect.py`. Detections go to the console and `detections.csv`. |
 
 Sign names are cleaned into folder names: `Guten Tag` becomes `guten_tag`. A recording stops by itself after 20 s.
@@ -147,12 +148,12 @@ also load them straight from the Hub: `load_dataset("Rakobra/sign-hands-german",
 It's split **by person** (train 1–8, validation 9 and 12, test 10 and 11), so the test score shows how well a
 model reads the hand shape of someone it has never seen. `import_alphabet.py` made it once from the original
 PNGs (Kaggle, by schauerstoff, **CC BY-SA 4.0**: credit the author and share anything built from it under the
-same license; see `images/SOURCE.md` on the Hub). The PNGs were then removed and are only in the repo's history. Nothing in this project trains on photos yet.
+same license; see `images/SOURCE.md` on the Hub). The PNGs were then removed and are only in the repo's history. `extract_dataset.py` doesn't read these yet, only the Alphabet tab's own `images/<letter>/`.
 
 ## 2. Convert the MP4s into a labelled dataset
 
 ```bash
-python extract_dataset.py                 # reads videos/, writes dataset/
+python extract_dataset.py                 # reads videos/ and images/<letter>/, writes dataset/
 python extract_dataset.py --force         # re-extract everything
 ```
 
@@ -234,7 +235,7 @@ A sign only counts as detected after it wins 10 predictions in a row with confid
 | File | Purpose |
 |---|---|
 | `landmarks.py` | MediaPipe tracking, face/hand drawing, keypoint extraction (shared) |
-| `extract_dataset.py` | MP4s → labelled `.npy` dataset |
+| `extract_dataset.py` | MP4s and photos → labelled `.npy` dataset |
 | `train.py` | dataset → `model.keras` + `labels.txt` |
 | `detect.py` | webcam/MP4 → landmarks + output field + console + CSV |
 | `app.py` | one window with the Record / Alphabet / Clips / Detect tabs |

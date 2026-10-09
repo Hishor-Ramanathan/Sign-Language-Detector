@@ -52,6 +52,23 @@ class ClipRecorder:
         return path, len(frames), seconds
 
 
+def save_and_upload(recorder, sync):
+    """Stop the recorder, save its clip and upload it in the background.
+    Returns the status line, or None if no frame was captured."""
+    saved = recorder.stop(sync.owner)
+    if not saved:
+        return None
+    path, frames, seconds = saved
+    in_background(sync.push, path)
+    upload = "uploading" if sync.owner else "not uploaded: not logged in to Hugging Face"
+    return f"Saved {path}  ({frames} frames, {seconds:.1f} s), {upload}"
+
+
+def draw_recording_badge(frame, seconds):
+    cv2.circle(frame, (20, 20), 8, RED, -1)
+    cv2.putText(frame, f"REC {seconds:.1f}s", (35, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, RED, 2, cv2.LINE_AA)
+
+
 class RecordTab(ttk.Frame):
     def __init__(self, parent, sync):
         super().__init__(parent, padding=8)
@@ -82,20 +99,15 @@ class RecordTab(ttk.Frame):
                 self.toggle_recording()
         draw_face_and_hands(frame, results)
         if self._recorder.is_recording:
-            cv2.circle(frame, (20, 20), 8, RED, -1)
-            cv2.putText(frame, f"REC {self._recorder.seconds:.1f}s", (35, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, RED, 2, cv2.LINE_AA)
+            draw_recording_badge(frame, self._recorder.seconds)
         show_frame(self._video, frame)
 
     def toggle_recording(self):
         if self._recorder.is_recording:
-            saved = self._recorder.stop(self._sync.owner)
+            message = save_and_upload(self._recorder, self._sync)
             self._record_button.configure(text="● Record")
-            if saved:
-                path, frames, seconds = saved
-                in_background(self._sync.push, path)
-                upload = "uploading" if self._sync.owner else "not uploaded: not logged in to Hugging Face"
-                self._status.configure(text=f"Saved {path}  ({frames} frames, {seconds:.1f} s), {upload}")
+            if message:
+                self._status.configure(text=message)
             self._sign.configure(values=list_signs())
             self._update_count()
             return

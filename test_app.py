@@ -10,13 +10,13 @@ import numpy as np
 
 from clip_sync import ClipSync, new_clip_path, owner_of
 from detect import STABLE_PREDICTIONS, SignDetector, draw_output_field, draw_probability_bars
-from extract_dataset import choose_split, forget_extracted
+from extract_dataset import choose_split, forget_extracted, photo_to_sample, sample_stem
 from import_alphabet import SPLITS, target_path
-from landmarks import SEQUENCE_LENGTH
+from landmarks import KEYPOINTS_PER_FRAME, SEQUENCE_LENGTH
 from tabs.alphabet_tab import reference_picture, save_photo
-from tabs.clips_tab import trim_clip
-from tabs.common import clean_sign_name
-from tabs.record_tab import ClipRecorder
+from tabs.clips_tab import read_frames, trim_clip
+from tabs.common import clean_sign_name, list_clips, list_photos, list_signs
+from tabs.record_tab import ClipRecorder, save_and_upload
 
 
 def frame_count(path):
@@ -153,6 +153,41 @@ def check_save_photo():
     assert cv2.imdecode(np.fromfile("images/a/a_001.jpg", np.uint8), cv2.IMREAD_COLOR).shape == frame.shape
 
 
+def check_letter_clip():
+    recorder = ClipRecorder()
+    recorder.start("z")
+    for _ in range(5):
+        recorder.add(np.zeros((120, 160, 3), np.uint8))
+    logged_out = SimpleNamespace(owner=None, push=lambda path: False)
+    assert save_and_upload(recorder, logged_out).startswith("Saved")
+    assert list_clips("z") == [Path("videos/z/z_001.mp4")]
+    assert save_and_upload(recorder, logged_out) is None  # not recording: nothing to save
+
+
+def check_photos_in_clips_tab():
+    """Run after check_save_photo, check_letter_clip and check_record_trim_forget."""
+    assert list_signs() == ["a", "hallo", "z", "ä"]  # signs with only photos are listed too
+    Path("images/train/b").mkdir(parents=True)  # the Hub's photos, downloaded: a split folder isn't a sign
+    assert list_signs() == ["a", "hallo", "z", "ä"]
+    assert list_photos("a") == [Path("images/a/a_001.jpg"), Path("images/a/a_002.jpg")]
+    frames, _ = read_frames(Path("images/ä/ä_001.jpg"))  # a photo is a clip of one frame
+    assert len(frames) == 1 and frames[0].shape == (120, 160, 3)
+
+
+def check_photo_becomes_sample():
+    """Run after check_save_photo. A photo trains like a clip of 30 identical frames, under its own name."""
+    photo = Path("images/ä/ä_001.jpg")
+    sample, hands, frames = photo_to_sample(photo)
+    assert sample.shape == (SEQUENCE_LENGTH, KEYPOINTS_PER_FRAME) and (sample == sample[0]).all()
+    assert (hands, frames) == (0, 1)  # the test photo is black: no hand
+    assert sample_stem(photo) == "ä_001_photo" and sample_stem(Path("videos/ä/ä_001.mp4")) == "ä_001"
+    npy = Path("dataset/train/ä/ä_001_photo.npy")
+    npy.parent.mkdir(parents=True)
+    npy.touch()
+    forget_extracted(Path("dataset"), photo)  # deleting the photo in the Clips tab drops its sample
+    assert not npy.exists()
+
+
 def check_reference_picture():
     assert reference_picture("a") is None  # no references/ folder yet
     Path("references").mkdir()
@@ -188,6 +223,9 @@ if __name__ == "__main__":
     check_alphabet_import()
     check_split_is_70_15_15()
     check_save_photo()
+    check_letter_clip()
+    check_photos_in_clips_tab()
+    check_photo_becomes_sample()
     check_reference_picture()
     check_detector_reports_each_sign_once()
     check_overlay_draws()

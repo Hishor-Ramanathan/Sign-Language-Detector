@@ -1,12 +1,14 @@
-"""What several tabs share: where clips live, sign names, writing MP4s, showing frames, background work."""
+"""What several tabs share: where clips and photos live, sign names, writing MP4s, showing frames, background work."""
 import re
 import threading
+from pathlib import Path
 
 import cv2
 from PIL import Image, ImageTk
 
 from clip_sync import VIDEOS_DIR
 
+IMAGES_DIR = Path("images")  # images/<letter>/<letter>_001.jpg, photos from the Alphabet tab
 TARGET_SAMPLES = 30         # clips per sign (photos per letter) the README recommends
 DISPLAY_SIZE = (560, 420)   # largest size a frame is shown at; keeps the window on a laptop screen
 
@@ -17,11 +19,18 @@ def clean_sign_name(text):
 
 
 def list_signs():
-    return sorted(d.name for d in VIDEOS_DIR.iterdir() if d.is_dir()) if VIDEOS_DIR.exists() else []
+    """Every sign with clips or photos; a letter may have only photos."""
+    folders = [d for root in (VIDEOS_DIR, IMAGES_DIR) if root.exists() for d in root.iterdir() if d.is_dir()]
+    # any(): skips images/train/ etc. from the Hub download, which hold letter folders, not photos
+    return sorted({folder.name for folder in folders if folder.parent == VIDEOS_DIR or any(folder.glob("*.jpg"))})
 
 
 def list_clips(sign):
     return sorted((VIDEOS_DIR / sign).glob("*.mp4"))
+
+
+def list_photos(sign):
+    return sorted((IMAGES_DIR / sign).glob("*.jpg"))
 
 
 def write_mp4(path, frames, fps):

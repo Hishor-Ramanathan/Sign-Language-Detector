@@ -1,4 +1,4 @@
-"""Clips tab: every clip grouped by sign - play, scrub, check hand tracking, trim, delete, sync."""
+"""Clips tab: every clip and photo grouped by sign - play, scrub, check hand tracking, trim, delete, sync."""
 import shutil
 import tempfile
 import threading
@@ -9,9 +9,10 @@ from tkinter import messagebox, ttk
 import cv2
 
 from clip_sync import DATASET_DIR, NOT_REACHABLE, owner_of
-from extract_dataset import forget_extracted
+from extract_dataset import forget_extracted, read_photo
 from landmarks import HolisticTracker, draw_face_and_hands, has_hands
-from tabs.common import TARGET_SAMPLES, fit, in_background, list_clips, list_signs, show_frame, write_mp4
+from tabs.common import (TARGET_SAMPLES, fit, in_background, list_clips, list_photos, list_signs, show_frame,
+                         write_mp4)
 
 
 def clip_seconds(path):
@@ -19,6 +20,24 @@ def clip_seconds(path):
     frames, fps = capture.get(cv2.CAP_PROP_FRAME_COUNT), capture.get(cv2.CAP_PROP_FPS)
     capture.release()
     return frames / fps if fps else 0.0
+
+
+def read_frames(path):
+    """(frames at display size, frame rate). A photo is a clip of one frame, so everything else works on it too;
+    trimming re-reads the original file."""
+    if path.suffix == ".jpg":
+        photo = read_photo(path)
+        return ([] if photo is None else [fit(photo)]), 30.0
+    capture = cv2.VideoCapture(str(path))
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    frames = []
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        frames.append(fit(frame))
+    capture.release()
+    return frames, fps
 
 
 def trim_clip(path, first, last):
@@ -94,27 +113,23 @@ class ClipsTab(ttk.Frame):
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
         for sign in list_signs():
-            clips = list_clips(sign)
-            node = self._tree.insert("", "end", text=f"{sign}   ({len(clips)}/{TARGET_SAMPLES})", open=True)
+            clips, photos = list_clips(sign), list_photos(sign)
+            counts = [f"{len(items)}/{TARGET_SAMPLES} {kind}" for items, kind in ((clips, "clips"), (photos, "photos"))
+                      if items]
+            node = self._tree.insert("", "end", text=f"{sign}   ({', '.join(counts)})", open=True)
             for clip in clips:
                 self._tree.insert(node, "end", iid=str(clip), text=clip.name, values=(f"{clip_seconds(clip):.1f} s",))
+            for photo in photos:
+                self._tree.insert(node, "end", iid=str(photo), text=photo.name, values=("photo",))
 
     def _on_select(self, _event):
         selected = self._tree.selection()
-        if selected and selected[0].endswith(".mp4"):  # sign rows have generated ids
+        if selected and selected[0].endswith((".mp4", ".jpg")):  # sign rows have generated ids
             self._load(Path(selected[0]))
 
     def _load(self, path):
         self.pause()
-        capture = cv2.VideoCapture(str(path))
-        self._fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
-        frames = []
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            frames.append(fit(frame))  # display size only; trimming re-reads the original file
-        capture.release()
+        frames, self._fps = read_frames(path)
         if not frames:
             self._info.configure(text=f"Could not read {path.name}.")
             return

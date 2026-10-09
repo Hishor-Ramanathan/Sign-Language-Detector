@@ -1,9 +1,11 @@
-"""Turn labelled MP4s into training samples, split into train / val / test.
+"""Turn labelled MP4s and photos into training samples, split into train / val / test.
 
-    videos/<label>/<any name>.mp4  ->  dataset/<split>/<label>/<same name>.npy   (shape 30 x 1692)
+    videos/<label>/<any name>.mp4  ->  dataset/<split>/<label>/<same name>.npy         (shape 30 x 1692)
+    images/<label>/<any name>.jpg  ->  dataset/<split>/<label>/<same name>_photo.npy
 
 The folder name is the label. Every frame is tracked (the tracker needs consecutive frames),
 then 30 frames spread evenly across the clip are kept, so clip length doesn't matter.
+A photo is a letter held still: its one frame repeated 30 times, so the same model learns from photos and clips.
 
 Each new sample goes to the split of its label that is furthest below its share of SPLITS.
 Samples never move once placed, so a test clip can't leak into training on a later run.
@@ -20,6 +22,11 @@ from landmarks import SEQUENCE_LENGTH, HolisticTracker, extract_keypoints, has_h
 SPLITS = {"train": 0.70, "val": 0.15, "test": 0.15}
 
 
+def sample_stem(source):
+    """The .npy name for a clip or photo: a_001.jpg -> a_001_photo, so it can't clash with clip a_001.mp4."""
+    return f"{source.stem}_photo" if source.suffix == ".jpg" else source.stem
+
+
 def extracted_path(root, label, stem):
     """The clip's .npy in whichever split it was put, or None if it isn't extracted yet."""
     for split in SPLITS:
@@ -30,8 +37,8 @@ def extracted_path(root, label, stem):
 
 
 def forget_extracted(root, clip):
-    """Delete the clip's .npy so the next run rebuilds it from the changed clip."""
-    sample = extracted_path(root, clip.parent.name, clip.stem)
+    """Delete the clip's (or photo's) .npy so the next run rebuilds it from the changed clip."""
+    sample = extracted_path(root, clip.parent.name, sample_stem(clip))
     if sample:
         sample.unlink()
 
@@ -63,27 +70,46 @@ def video_to_sample(video_path):
     return np.array(keypoints)[picks], hand_frames, len(keypoints)
 
 
+def read_photo(path):
+    """The photo as a BGR frame, or None. cv2.imread can't read non-ASCII paths (ä)."""
+    return cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR)
+
+
+def photo_to_sample(photo_path):
+    """Return (sample of shape (30, 1692), 1 if a hand is visible else 0, 1 frame) - the same as video_to_sample."""
+    frame = read_photo(photo_path)
+    if frame is None:
+        return None, 0, 0
+    # ponytail: one tracker (model load) per photo, since photos aren't consecutive frames; batch if it gets slow
+    with HolisticTracker() as tracker:
+        results = tracker.process(frame, 0)
+    return np.tile(extract_keypoints(results), (SEQUENCE_LENGTH, 1)), int(has_hands(results)), 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--videos", type=Path, default=Path("videos"))
+    parser.add_argument("--images", type=Path, default=Path("images"),
+                        help="the Alphabet tab's photos, images/<letter>/*.jpg")
     parser.add_argument("--out", type=Path, default=Path("dataset"))
-    parser.add_argument("--force", action="store_true", help="re-extract videos that already have a .npy")
+    parser.add_argument("--force", action="store_true", help="re-extract clips and photos that already have a .npy")
     args = parser.parse_args()
 
-    videos = sorted(args.videos.glob("*/*.mp4"))
-    if not videos:
-        raise SystemExit(f"No MP4s found under {args.videos}/<label>/ - see README.md")
+    sources = sorted(args.videos.glob("*/*.mp4")) + sorted(args.images.glob("*/*.jpg"))
+    if not sources:
+        raise SystemExit(f"No MP4s under {args.videos}/<label>/ or photos under {args.images}/<label>/ - see README.md")
 
-    for video in videos:
-        label = video.parent.name
-        existing = extracted_path(args.out, label, video.stem)
+    for source in sources:
+        label, stem = source.parent.name, sample_stem(source)
+        existing = extracted_path(args.out, label, stem)
         if existing and not args.force:
             continue
-        sample, hand_frames, total = video_to_sample(video)
+        to_sample = photo_to_sample if source.suffix == ".jpg" else video_to_sample
+        sample, hand_frames, total = to_sample(source)
         if sample is None:
-            print(f"SKIP  {video}: could not read any frames")
+            print(f"SKIP  {source}: could not read any frames")
             continue
-        out_file = existing or args.out / choose_split(args.out, label) / label / f"{video.stem}.npy"
+        out_file = existing or args.out / choose_split(args.out, label) / label / f"{stem}.npy"
         out_file.parent.mkdir(parents=True, exist_ok=True)
         np.save(out_file, sample)
         warning = "  <-- WARNING: hands rarely visible, check this clip" if hand_frames < total / 2 else ""

@@ -9,7 +9,8 @@ Tabs (one module each in tabs/):
   Alphabet - webcam with landmarks and, next to it, references/<letter>.jpg showing the hand shape.
              Pick a letter, show its hand shape, press Snap (or Space).
              Photos are saved to images/<letter>/<letter>_001.jpg, _002, ...; a frame without a hand isn't saved.
-  Clips    - every clip grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
+             Letters that move (Z, J, Ä, ...): Record / Stop saves a clip to videos/<letter>/, as in the Record tab.
+  Clips    - every clip and photo grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
              Only the clip's owner can trim or delete it. Sync fetches the team's clips.
   Detect   - live detection with the output field, same as detect.py.
 Training runs on the command line: python extract_dataset.py, then python train.py.
@@ -45,7 +46,7 @@ class SignLanguageApp:
         self._notebook.enable_traversal()  # Ctrl+Tab / Ctrl+Shift+Tab switch tabs
         self._detect = DetectTab(self._notebook, self._log)
         self._record = RecordTab(self._notebook, sync)
-        self._alphabet = AlphabetTab(self._notebook)
+        self._alphabet = AlphabetTab(self._notebook, sync)
         self._clips = ClipsTab(self._notebook, sync)
         self._notebook.add(self._record, text="Record")
         self._notebook.add(self._alphabet, text="Alphabet")
@@ -68,6 +69,8 @@ class SignLanguageApp:
         tab = self._current_tab()
         if tab is not self._record:
             self._record.stop_recording()
+        if tab is not self._alphabet:
+            self._alphabet.stop_recording()
         if tab is not self._clips:
             self._clips.pause()
         if tab is self._clips:
@@ -85,6 +88,7 @@ class SignLanguageApp:
 
     def _close(self):
         self._record.stop_recording()
+        self._alphabet.stop_recording()
         self._clips.pause()
         self._camera.release()
         self._tracker.close()

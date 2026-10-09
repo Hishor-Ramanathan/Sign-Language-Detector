@@ -1,4 +1,4 @@
-"""Alphabet tab: photos of fingerspelled letters, next to a reference picture of the hand shape."""
+"""Alphabet tab: photos (or, for letters that move, clips) of fingerspelled letters, next to a reference picture."""
 import string
 from pathlib import Path
 from tkinter import ttk
@@ -7,9 +7,9 @@ import cv2
 from PIL import Image, ImageTk
 
 from landmarks import draw_face_and_hands, has_hands
-from tabs.common import TARGET_SAMPLES, clean_sign_name, show_frame
+from tabs.common import IMAGES_DIR, TARGET_SAMPLES, clean_sign_name, list_clips, list_photos, show_frame
+from tabs.record_tab import ClipRecorder, draw_recording_badge, save_and_upload
 
-IMAGES_DIR = Path("images")
 REFERENCES_DIR = Path("references")  # <letter>.jpg showing the hand shape; local only, often stock pictures
 REFERENCE_SIZE = (220, 220)
 
@@ -43,8 +43,10 @@ def reference_picture(letter):
 
 
 class AlphabetTab(ttk.Frame):
-    def __init__(self, parent):
+    def __init__(self, parent, sync):
         super().__init__(parent, padding=8)
+        self._sync = sync
+        self._recorder = ClipRecorder()
         self._frame = self._results = None  # latest raw webcam frame and its tracking, for snap()
 
         controls = ttk.Frame(self)
@@ -57,6 +59,8 @@ class AlphabetTab(ttk.Frame):
         self._letter.bind("<Return>", lambda _: self._letter_chosen())
         self._letter.bind("<KeyRelease>", lambda _: self._letter_changed())
         ttk.Button(controls, text="📷 Snap", command=self.snap).pack(side="left", padx=4)
+        self._record_button = ttk.Button(controls, text="● Record", command=self.toggle_recording)
+        self._record_button.pack(side="left", padx=4)
         self._count = ttk.Label(controls)
         self._count.pack(side="left", padx=8)
 
@@ -66,13 +70,20 @@ class AlphabetTab(ttk.Frame):
         self._video.pack(side="left")
         self._reference = ttk.Label(view, justify="center")
         self._reference.pack(side="left", padx=(12, 0))
-        self._status = ttk.Label(self, text="Show the letter's hand shape, then press Snap or Space.")
+        self._status = ttk.Label(self, text="Show the letter's hand shape, then press Snap or Space. "
+                                            "For a letter that moves (Z, J, Ä, ...) press Record instead.")
         self._status.pack(fill="x")
         self._letter_changed()
 
     def show_camera_frame(self, frame, results):
         self._frame, self._results = frame.copy(), results  # copy: the photo is saved without landmarks
+        if self._recorder.is_recording:
+            self._recorder.add(frame)
+            if self._recorder.seconds > ClipRecorder.MAX_SECONDS:
+                self.toggle_recording()
         draw_face_and_hands(frame, results)
+        if self._recorder.is_recording:
+            draw_recording_badge(frame, self._recorder.seconds)
         show_frame(self._video, frame)
 
     def snap(self):
@@ -85,6 +96,27 @@ class AlphabetTab(ttk.Frame):
         path = save_photo(letter, self._frame, self._results)
         self._status.configure(text=f"Saved {path}" if path else "No hand found - not saved.")
         self._update_count()
+
+    def toggle_recording(self):
+        """Record a clip of the letter into videos/<letter>/, like the Record tab does for a sign."""
+        if self._recorder.is_recording:
+            message = save_and_upload(self._recorder, self._sync)
+            self._record_button.configure(text="● Record")
+            if message:
+                self._status.configure(text=message)
+            self._update_count()
+            return
+        letter = clean_sign_name(self._letter.get())
+        if not letter:
+            self._status.configure(text="Type a letter first.")
+            return
+        self._recorder.start(letter)
+        self._record_button.configure(text="■ Stop")
+        self._status.configure(text=f"Recording '{letter}'... press Stop when the letter is done.")
+
+    def stop_recording(self):
+        if self._recorder.is_recording:
+            self.toggle_recording()
 
     def _letter_chosen(self):
         self._letter_changed()
@@ -108,5 +140,8 @@ class AlphabetTab(ttk.Frame):
 
     def _update_count(self):
         letter = clean_sign_name(self._letter.get())
-        photos = len(list((IMAGES_DIR / letter).glob("*.jpg"))) if letter else 0
-        self._count.configure(text=f"{photos}/{TARGET_SAMPLES} photos" if letter else "")
+        if not letter:
+            self._count.configure(text="")
+            return
+        self._count.configure(text=f"{len(list_photos(letter))}/{TARGET_SAMPLES} photos · "
+                                   f"{len(list_clips(letter))}/{TARGET_SAMPLES} clips")
