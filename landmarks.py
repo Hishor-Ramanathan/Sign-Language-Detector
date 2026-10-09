@@ -50,6 +50,9 @@ class HolisticTracker:
         return self
 
     def __exit__(self, *exc):
+        self.close()
+
+    def close(self):
         self._model.close()
 
     def process(self, frame_bgr, timestamp_ms):

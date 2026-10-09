@@ -53,7 +53,8 @@ def main():
     order = np.random.default_rng(0).permutation(len(x))
     model = build_model(len(labels))
     model.fit(x[order], y[order], epochs=args.epochs, validation_split=0.1,
-              callbacks=[EarlyStopping(monitor="val_loss", patience=50, restore_best_weights=True)])
+              callbacks=[EarlyStopping(monitor="val_loss", patience=50, restore_best_weights=True)],
+              verbose=2)  # one line per epoch, readable in the app's log box too
 
     model.save("model.keras")
     Path("labels.txt").write_text("\n".join(labels) + "\n", encoding="utf-8")
