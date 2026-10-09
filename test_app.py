@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from app import ClipRecorder, clean_sign_name, forget_extracted, trim_clip
-from detect import STABLE_PREDICTIONS, SignDetector
+from detect import STABLE_PREDICTIONS, SignDetector, draw_output_field, draw_probability_bars
 from landmarks import SEQUENCE_LENGTH
 
 
@@ -57,9 +57,20 @@ def check_detector_reports_each_sign_once():
     assert all(r is None for i, r in enumerate(reports) if i != first)
 
 
+def check_overlay_draws():
+    for count in (2, 6):
+        labels = [f"sign_{i}" for i in range(count)]
+        frame = np.full((480, 640, 3), 200, np.uint8)
+        draw_probability_bars(frame, np.linspace(0, 1, count), labels, 0.5, labels[-1])
+        draw_output_field(frame, (labels[-1], 1.0), labels)
+        assert (frame[0, 0] < 200).all() and (frame[0, 0] > 0).all()  # banner is see-through, not opaque
+    draw_output_field(frame, None, [])  # nothing detected yet
+
+
 if __name__ == "__main__":
     os.chdir(tempfile.mkdtemp())  # the app works relative to the current folder
     check_sign_names()
     check_record_trim_forget()
     check_detector_reports_each_sign_once()
+    check_overlay_draws()
     print("all checks passed")

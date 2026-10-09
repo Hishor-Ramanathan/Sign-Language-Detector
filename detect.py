@@ -23,8 +23,17 @@ from landmarks import SEQUENCE_LENGTH, HolisticTracker, draw_face_and_hands, ext
 MODEL_FILE = Path("model.keras")
 LABELS_FILE = Path("labels.txt")
 STABLE_PREDICTIONS = 10  # a sign must win this many predictions in a row before it's reported
-BAR_COLORS = [(245, 117, 16), (117, 245, 16), (16, 117, 245), (200, 60, 200), (60, 200, 200)]
+FONT = cv2.FONT_HERSHEY_DUPLEX
+BANNER_HEIGHT = 84
+PANEL_WIDTH = 260
+# Colours are BGR, as OpenCV expects.
 WHITE = (255, 255, 255)
+MUTED = (170, 170, 170)
+DARK = (20, 20, 20)
+TRACK = (70, 70, 70)
+GREEN = (94, 197, 34)    # the detected sign
+AMBER = (11, 158, 245)   # above the threshold, but not yet stable long enough to be reported
+GREY = (130, 130, 130)   # below the threshold
 
 
 class DetectionLog:
@@ -92,7 +101,8 @@ class SignDetector:
 
     def draw(self, image):
         if self._probabilities is not None:
-            draw_probability_bars(image, self._probabilities, self.labels)
+            detected_sign = self._detected[0] if self._detected else None
+            draw_probability_bars(image, self._probabilities, self.labels, self._threshold, detected_sign)
         draw_output_field(image, self._detected, self._history)
 
 
@@ -105,22 +115,61 @@ def load_detector(threshold=0.5):
     return SignDetector(load_model(MODEL_FILE), labels, threshold)
 
 
+def darken(image, left, top, right, bottom):
+    """See-through dark panel: the camera stays visible behind the text."""
+    image[top:bottom, left:right] //= 3
+
+
+def put_text(image, text, origin, scale, color, thickness=1):
+    cv2.putText(image, text, origin, FONT, scale, color, thickness, cv2.LINE_AA)
+
+
 def draw_output_field(image, detected, history):
+    """Top banner: the detected sign with a confidence badge and meter, and the recent signs."""
     width = image.shape[1]
-    cv2.rectangle(image, (0, 0), (width, 40), (245, 117, 16), -1)
-    cv2.putText(image, " ".join(history), (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, WHITE, 2, cv2.LINE_AA)
-    cv2.rectangle(image, (0, 40), (width, 80), (40, 40, 40), -1)
-    text = f"Detected: {detected[0]} ({detected[1]:.0%})" if detected else "Detected: -"
-    cv2.putText(image, text, (5, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, WHITE, 2, cv2.LINE_AA)
+    darken(image, 0, 0, width, BANNER_HEIGHT)
+    if detected:
+        sign, confidence = detected
+        put_text(image, sign.upper(), (12, 44), 1.1, WHITE, 2)
+        (sign_width, _), _ = cv2.getTextSize(sign.upper(), FONT, 1.1, 2)
+        badge = f"{confidence:.0%}"
+        (badge_width, badge_height), _ = cv2.getTextSize(badge, FONT, 0.7, 2)
+        left = 24 + sign_width
+        cv2.rectangle(image, (left, 18), (left + badge_width + 16, 48), GREEN, -1)
+        put_text(image, badge, (left + 8, 33 + badge_height // 2), 0.7, DARK, 2)
+        cv2.rectangle(image, (0, BANNER_HEIGHT - 4), (int(width * confidence), BANNER_HEIGHT), GREEN, -1)
+    else:
+        put_text(image, "No sign yet", (12, 44), 1.1, GREY, 2)
+    put_text(image, "Recent: " + (", ".join(history) or "-"), (12, 70), 0.55, MUTED)
 
 
-def draw_probability_bars(image, probabilities, labels):
+def draw_probability_bars(image, probabilities, labels, threshold, detected_sign):
+    """One row per sign: name, confidence %, and a bar with a white tick at the threshold.
+
+    Rows keep the labels.txt order so they don't jump around; the leading sign gets a white label.
+    """
+    left, top, row_height = 8, BANNER_HEIGHT + 8, 30
+    track_left, track_right = left + 8, left + PANEL_WIDTH - 8
+    track_width = track_right - track_left
+    darken(image, left, top, left + PANEL_WIDTH, top + 8 + row_height * len(labels))
+    leader = int(np.argmax(probabilities))
     for i, (label, probability) in enumerate(zip(labels, probabilities)):
-        top = 90 + i * 40
-        cv2.rectangle(image, (0, top), (int(probability * 100), top + 30), BAR_COLORS[i % len(BAR_COLORS)], -1)
-        # Dark outline keeps the label readable when the bar is short and the background is light.
-        cv2.putText(image, label, (0, top + 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(image, label, (0, top + 25), cv2.FONT_HERSHEY_SIMPLEX, 1, WHITE, 2, cv2.LINE_AA)
+        y = top + 8 + i * row_height
+        if label == detected_sign:
+            bar_color = GREEN
+        elif probability > threshold:
+            bar_color = AMBER
+        else:
+            bar_color = GREY
+        text_color = WHITE if i == leader else MUTED
+        percent = f"{probability:.0%}"
+        (percent_width, _), _ = cv2.getTextSize(percent, FONT, 0.5, 1)
+        put_text(image, label, (track_left, y + 12), 0.5, text_color)
+        put_text(image, percent, (track_right - percent_width, y + 12), 0.5, text_color)
+        cv2.rectangle(image, (track_left, y + 16), (track_right, y + 22), TRACK, -1)
+        cv2.rectangle(image, (track_left, y + 16), (track_left + int(probability * track_width), y + 22), bar_color, -1)
+        tick = track_left + int(threshold * track_width)
+        cv2.line(image, (tick, y + 14), (tick, y + 24), WHITE, 1)
 
 
 def main():

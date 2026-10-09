@@ -478,7 +478,7 @@ class DetectTab(ttk.Frame):
                                         "'Build dataset + Train'.")
         else:
             self._detector.reset()  # frames from before the tab switch would mix into the next prediction
-            self._status.configure(text=f"Signs: {', '.join(self._detector.labels)}")
+            self._status.configure(text="")  # the overlay already lists every sign
 
     def show_camera_frame(self, frame, results):
         draw_face_and_hands(frame, results)
