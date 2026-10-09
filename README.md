@@ -46,6 +46,24 @@ The MediaPipe model (`holistic_landmarker.task`, ~14 MB) downloads itself on fir
 download is the only network access. Tracking, training and detection all run on your machine,
 and no video or landmarks are uploaded. Once the model file exists, everything works offline.
 
+## The app: record, review, train, detect
+
+```bash
+python app.py
+```
+
+One window with three tabs (Ctrl+Tab switches between them):
+
+| Tab | What you do there |
+|---|---|
+| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_<timestamp>.mp4`; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. **Build dataset + Train** runs `extract_dataset.py` and `train.py` and shows their output below the video. |
+| **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it. |
+| **Detect** | Live detection with the output field, same as `detect.py`. Detections go to the console and `detections.csv`. |
+
+Sign names are cleaned into folder names: `Guten Tag` becomes `guten_tag`. A recording stops by itself after 20 s.
+
+The sections below explain the same steps for the command-line scripts, and how to use MP4s from elsewhere (e.g. a phone).
+
 ## 1. Record your MP4s
 
 Make **one short clip per repetition of a sign**. Put the clips in a folder named after the sign.
@@ -138,3 +156,5 @@ A sign only counts as detected after it wins 10 predictions in a row with confid
 | `extract_dataset.py` | MP4s → labelled `.npy` dataset |
 | `train.py` | dataset → `model.keras` + `labels.txt` |
 | `detect.py` | webcam/MP4 → landmarks + output field + console + CSV |
+| `app.py` | Record / Clips / Detect tabs in one window |
+| `test_app.py` | smoke checks: `python test_app.py` |

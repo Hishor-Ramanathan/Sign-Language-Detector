@@ -17,10 +17,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from tensorflow.keras.models import load_model
 
 from landmarks import SEQUENCE_LENGTH, HolisticTracker, draw_face_and_hands, extract_keypoints
 
+MODEL_FILE = Path("model.keras")
+LABELS_FILE = Path("labels.txt")
 STABLE_PREDICTIONS = 10  # a sign must win this many predictions in a row before it's reported
 BAR_COLORS = [(245, 117, 16), (117, 245, 16), (16, 117, 245), (200, 60, 200), (60, 200, 200)]
 WHITE = (255, 255, 255)
@@ -41,6 +42,9 @@ class DetectionLog:
         return self
 
     def __exit__(self, *exc):
+        self.close()
+
+    def close(self):
         self._file.close()
 
     def record(self, sign, confidence, video_time_s):
@@ -49,6 +53,56 @@ class DetectionLog:
         video_time = "" if video_time_s is None else f"{video_time_s:.2f}"
         self._csv.writerow([now, self._source, video_time, sign, f"{confidence:.3f}"])
         self._file.flush()  # keep the CSV usable if the window is killed
+
+
+class SignDetector:
+    """Turns a stream of per-frame landmarks into smoothed sign detections and draws the overlay."""
+
+    def __init__(self, model, labels, threshold):
+        self.labels = labels
+        self._model = model
+        self._threshold = threshold
+        self.reset()
+
+    def reset(self):
+        """Forget all frames, e.g. after the stream was paused, so old frames don't leak into a prediction."""
+        self._window = deque(maxlen=SEQUENCE_LENGTH)      # last 30 frames of keypoints = one model input
+        self._recent = deque(maxlen=STABLE_PREDICTIONS)   # last predicted label indexes, for smoothing
+        self._history = deque(maxlen=5)                   # signs shown in the top banner
+        self._probabilities = None
+        self._detected = None
+
+    def step(self, results):
+        """Feed one frame's landmarks. Returns (sign, confidence) when a *new* sign is detected, else None."""
+        self._window.append(extract_keypoints(results))
+        self._detected = None
+        if len(self._window) < SEQUENCE_LENGTH:
+            return None
+        # Calling the model directly is faster than predict() for a single sample.
+        self._probabilities = np.asarray(self._model(np.array([self._window]), training=False))[0]
+        best = int(np.argmax(self._probabilities))
+        self._recent.append(best)
+        if self._recent.count(best) < STABLE_PREDICTIONS or self._probabilities[best] <= self._threshold:
+            return None
+        self._detected = (self.labels[best], float(self._probabilities[best]))
+        if self._history and self._history[-1] == self._detected[0]:
+            return None
+        self._history.append(self._detected[0])
+        return self._detected
+
+    def draw(self, image):
+        if self._probabilities is not None:
+            draw_probability_bars(image, self._probabilities, self.labels)
+        draw_output_field(image, self._detected, self._history)
+
+
+def load_detector(threshold=0.5):
+    """SignDetector for model.keras + labels.txt, or None if nothing has been trained yet."""
+    if not MODEL_FILE.exists():
+        return None
+    from tensorflow.keras.models import load_model  # slow import (5-10 s), so only pay it once a model exists
+    labels = LABELS_FILE.read_text(encoding="utf-8").split()
+    return SignDetector(load_model(MODEL_FILE), labels, threshold)
 
 
 def draw_output_field(image, detected, history):
@@ -77,17 +131,12 @@ def main():
     parser.add_argument("--preview", action="store_true", help="only draw landmarks; no model needed")
     args = parser.parse_args()
 
-    model, labels = None, []
+    detector = None
     if not args.preview:
-        if not Path("model.keras").exists():
-            raise SystemExit("No model.keras yet - run train.py first (see README.md), or use --preview")
-        model = load_model("model.keras")
-        labels = Path("labels.txt").read_text(encoding="utf-8").split()
+        detector = load_detector(args.threshold)
+        if detector is None:
+            raise SystemExit(f"No {MODEL_FILE} yet - run train.py first (see README.md), or use --preview")
     capture = cv2.VideoCapture(str(args.video) if args.video else 0)
-
-    window = deque(maxlen=SEQUENCE_LENGTH)      # last 30 frames of keypoints = one model input
-    recent = deque(maxlen=STABLE_PREDICTIONS)   # last predicted label indexes, for smoothing
-    history = deque(maxlen=5)                   # signs shown in the top banner
 
     with HolisticTracker() as tracker, DetectionLog(args.log, str(args.video or "webcam")) as log:
         while capture.isOpened():
@@ -98,22 +147,11 @@ def main():
             timestamp_ms = video_time_s * 1000 if args.video else time.monotonic() * 1000
             results = tracker.process(frame, timestamp_ms)
             draw_face_and_hands(frame, results)
-            window.append(extract_keypoints(results))
-
-            detected = None
-            if model is not None and len(window) == SEQUENCE_LENGTH:
-                # Calling the model directly is faster than predict() for a single sample.
-                probabilities = model(np.array([window]), training=False).numpy()[0]
-                best = int(np.argmax(probabilities))
-                recent.append(best)
-                if recent.count(best) == STABLE_PREDICTIONS and probabilities[best] > args.threshold:
-                    detected = (labels[best], float(probabilities[best]))
-                    if not history or history[-1] != detected[0]:
-                        history.append(detected[0])
-                        log.record(*detected, video_time_s)
-                draw_probability_bars(frame, probabilities, labels)
-
-            draw_output_field(frame, detected, history)
+            if detector is not None:
+                new_sign = detector.step(results)
+                if new_sign:
+                    log.record(*new_sign, video_time_s)
+                detector.draw(frame)
             cv2.imshow("Sign Language Detector", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
