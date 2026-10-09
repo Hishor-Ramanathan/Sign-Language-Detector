@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from app import (ClipRecorder, TrainingProgress, clean_sign_name, forget_extracted, number_clips, save_photo,
-                 trim_clip)
+from app import (ClipRecorder, TrainingProgress, clean_sign_name, forget_extracted, number_clips, reference_picture,
+                 save_photo, trim_clip)
 from detect import STABLE_PREDICTIONS, SignDetector, draw_output_field, draw_probability_bars
 from extract_dataset import choose_split
 from landmarks import SEQUENCE_LENGTH
@@ -83,6 +83,13 @@ def check_save_photo():
     assert cv2.imdecode(np.fromfile("images/a/a_001.jpg", np.uint8), cv2.IMREAD_COLOR).shape == frame.shape
 
 
+def check_reference_picture():
+    assert reference_picture("a") is None  # no references/ folder yet
+    Path("references").mkdir()
+    Path("references/a.png").touch()
+    assert reference_picture("a") == Path("references/a.png") and reference_picture("b") is None
+
+
 def check_training_progress_reads_train_py_output():
     progress = TrainingProgress()
     output = ["14 train / 4 val / 2 test samples, labels: ['danke', 'hallo']",
@@ -123,6 +130,7 @@ if __name__ == "__main__":
     check_number_clips()
     check_split_is_70_15_15()
     check_save_photo()
+    check_reference_picture()
     check_training_progress_reads_train_py_output()
     check_detector_reports_each_sign_once()
     check_overlay_draws()

@@ -5,7 +5,8 @@
 Tabs:
   Record  - webcam with face/hand landmarks. Pick or type a sign, then Record / Stop.
             Clips are saved to videos/<sign>/<sign>_001.mp4, _002, ..., the layout extract_dataset.py reads.
-  Alphabet - webcam with landmarks. Pick a letter, show its hand shape, press Snap (or Space).
+  Alphabet - webcam with landmarks and, next to it, references/<letter>.jpg showing the hand shape.
+            Pick a letter, show its hand shape, press Snap (or Space).
             Photos are saved to images/<letter>/<letter>_001.jpg, _002, ...; a frame without a hand isn't saved.
   Clips  - every clip grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
             Opening the tab renumbers each sign's clips to <sign>_001.mp4, ... (covers clips copied in by hand).
@@ -39,8 +40,10 @@ from landmarks import HolisticTracker, draw_face_and_hands, has_hands
 VIDEOS_DIR = Path("videos")
 DATASET_DIR = Path("dataset")
 IMAGES_DIR = Path("images")
+REFERENCES_DIR = Path("references")  # <letter>.jpg showing the hand shape; local only, often stock pictures
 TARGET_SAMPLES = 30         # clips per sign (photos per letter) the README recommends
 DISPLAY_SIZE = (560, 420)   # largest size a frame is shown at; keeps the window on a laptop screen
+REFERENCE_SIZE = (220, 220)
 RED = (0, 0, 255)
 
 
@@ -135,6 +138,11 @@ def save_photo(letter, frame, results):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(cv2.imencode(".jpg", frame)[1].tobytes())  # cv2.imwrite can't write to non-ASCII paths (ä)
     return path
+
+
+def reference_picture(letter):
+    """references/<letter>.jpg (or .png, ...) showing how to sign the letter, or None."""
+    return next(REFERENCES_DIR.glob(f"{letter}.*"), None) if letter else None
 
 
 def forget_extracted(path):
@@ -436,16 +444,20 @@ class AlphabetTab(ttk.Frame):
         self._letter.pack(side="left", padx=4)
         self._letter.bind("<<ComboboxSelected>>", lambda _: self._letter_chosen())
         self._letter.bind("<Return>", lambda _: self._letter_chosen())
-        self._letter.bind("<KeyRelease>", lambda _: self._update_count())
+        self._letter.bind("<KeyRelease>", lambda _: self._letter_changed())
         ttk.Button(controls, text="📷 Snap", command=self.snap).pack(side="left", padx=4)
         self._count = ttk.Label(controls)
         self._count.pack(side="left", padx=8)
 
-        self._video = ttk.Label(self)
-        self._video.pack(pady=6)
+        view = ttk.Frame(self)
+        view.pack(pady=6)
+        self._video = ttk.Label(view)
+        self._video.pack(side="left")
+        self._reference = ttk.Label(view, justify="center")
+        self._reference.pack(side="left", padx=(12, 0))
         self._status = ttk.Label(self, text="Show the letter's hand shape, then press Snap or Space.")
         self._status.pack(fill="x")
-        self._update_count()
+        self._letter_changed()
 
     def show_camera_frame(self, frame, results):
         self._frame, self._results = frame.copy(), results  # copy: the photo is saved without landmarks
@@ -464,8 +476,24 @@ class AlphabetTab(ttk.Frame):
         self._update_count()
 
     def _letter_chosen(self):
-        self._update_count()
+        self._letter_changed()
         self.focus_set()  # out of the letter box, so Space snaps instead of typing a space
+
+    def _letter_changed(self):
+        self._update_count()
+        self._show_reference()
+
+    def _show_reference(self):
+        path = reference_picture(clean_sign_name(self._letter.get()))
+        if path is None:
+            self._reference.configure(image="", text="No reference picture.\nAdd one as references/<letter>.jpg")
+            self._reference.image = None
+            return
+        picture = Image.open(path)
+        picture.thumbnail(REFERENCE_SIZE)
+        image = ImageTk.PhotoImage(picture)
+        self._reference.configure(image=image, text="")
+        self._reference.image = image  # Tk keeps no reference of its own (see show_frame)
 
     def _update_count(self):
         letter = clean_sign_name(self._letter.get())

@@ -13,4 +13,5 @@ venv/
 # Training clips stay local; runtime log
 videos/
 images/
+references/
 detections.csv
