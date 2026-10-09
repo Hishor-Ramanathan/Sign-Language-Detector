@@ -42,9 +42,10 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-The MediaPipe model (`holistic_landmarker.task`, ~14 MB) downloads itself on first run. That
-download is the only network access. Tracking, training and detection all run on your machine,
-and no video or landmarks are uploaded. Once the model file exists, everything works offline.
+The MediaPipe model (`holistic_landmarker.task`, ~14 MB) downloads itself on first run. Tracking,
+training and detection all run on your machine. The only other network access is the clip sync with
+the team's Hugging Face repo (see [Sharing clips with the team](#sharing-clips-with-the-team)); logged
+out, nothing is uploaded and everything works offline.
 
 ## The app: record, review, train, detect
 
@@ -52,14 +53,13 @@ and no video or landmarks are uploaded. Once the model file exists, everything w
 python app.py
 ```
 
-One window with five tabs (Ctrl+Tab switches between them):
+One window with four tabs (Ctrl+Tab switches between them). Each tab is one module in `tabs/`:
 
 | Tab | What you do there |
 |---|---|
-| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_001.mp4`, `_002`, …; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. |
+| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_<your tag>_001.mp4`, `_002`, … and uploaded to the team repo in the background; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. |
 | **Alphabet** | Photos of fingerspelled letters. Pick a letter (A–Z, or type one like `Ä`), show its hand shape, press **📷 Snap** or **Space**. Next to the camera the tab shows `references/<letter>.jpg` (or `.png`) as a guide to the hand shape, if there is one; `references/` is in `.gitignore` because such pictures are usually someone else's. The photo is saved to `images/<letter>/<letter>_001.jpg`, `_002`, … without the landmark drawing; the counter shows photos out of the 30 target. A frame with no hand found isn't saved. Letters that move (J, Z, Ä, Ö, Ü, SCH in DGS) are better recorded as clips in the Record tab. What's inside `images/` is in `.gitignore`, like `videos/`. Photos aren't used for training yet. |
-| **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it. Opening the tab renumbers every sign's clips to `<sign>_001.mp4`, `_002`, … in name order (closing gaps after a delete, and naming clips copied in from a phone); each clip's `.npy` is renamed with it. |
-| **Training** | **Build dataset + Train** runs `extract_dataset.py` and `train.py`. Two live charts, **Accuracy** and **Loss**, draw the train line (blue) and the val line (orange) epoch by epoch; the status line shows the latest epoch score. When training ends a dashed line marks the best epoch (the one that's saved) and the test score appears below the charts, per sign: `Test accuracy 88% (7/8 correct)   danke 4/4   hallo 3/4`. The log underneath has the full output. Train climbing while val falls back is overfitting; early stopping picks the epoch before it. |
+| **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it, and the change goes to the team repo. Only the clip's owner (the tag in the file name) can trim or delete it. **⟳ Sync with team** fetches the team's clips and uploads yours (see below). |
 | **Detect** | Live detection with the output field, same as `detect.py`. Detections go to the console and `detections.csv`. |
 
 Sign names are cleaned into folder names: `Guten Tag` becomes `guten_tag`. A recording stops by itself after 20 s.
@@ -69,8 +69,8 @@ The sections below explain the same steps for the command-line scripts, and how 
 ## 1. Record your MP4s
 
 Make **one short clip per repetition of a sign**. Put the clips in a folder named after the sign.
-**The folder name is the label**, so the file names don't matter; the app's Clips tab renames them to `<sign>_001.mp4`, … anyway. What's inside `videos/` is in `.gitignore`
-(only the empty folder is committed), so the clips stay on your machine and are never committed.
+**The folder name is the label**, so the file names don't matter; the next sync renames them to `<sign>_<your tag>_001.mp4` (e.g. `guten_tag_hr_001.mp4`), … anyway. What's inside `videos/` is in `.gitignore`
+(only the empty folder is committed): clips are shared through Hugging Face, never through git.
 
 ```
 videos/
@@ -97,6 +97,57 @@ Recording tips:
 | Phone videos | Any frame rate or resolution works. Each clip is resampled to 30 frames. |
 
 Clip length doesn't need to match. 30 evenly spaced frames are taken from each clip.
+
+## Sharing clips with the team
+
+Clips live in the private Hugging Face dataset repo
+[`Rakobra/sign-hands-german`](https://huggingface.co/datasets/Rakobra/sign-hands-german), next to the code's
+`videos/` layout. One-time setup per person:
+
+1. A Hugging Face account that is a member of the `Rakobra` organisation (write access).
+2. A token with **Write** permission from <https://huggingface.co/settings/tokens>, then in your own terminal
+   (the token isn't shown and is stored in your user folder, not in the project):
+   ```bash
+   .venv\Scripts\hf auth login
+   .venv\Scripts\hf auth whoami      # check: prints your user name
+   ```
+3. Your user name and a tag of 2–4 lowercase letters (your initials) in `OWNER_TAGS` in `clip_sync.py`,
+   e.g. `{"Hishor-R": "hr"}`. Commit that, so everyone's app knows the tag.
+
+Every clip has one **owner**, whose tag is in the file name: `hallo_hr_001.mp4`. Only the owner uploads,
+trims or deletes a clip, so two people never write the same file.
+
+| When | What happens |
+|---|---|
+| You stop a recording | the clip is uploaded in the background |
+| You trim or delete your clip | the change is uploaded |
+| **⟳ Sync with team** in the Clips tab, or `python clip_sync.py` | 1. clips without an owner (recorded while logged out, copied in from a phone) get your tag<br>2. your clips that are missing or different on the Hub are uploaded<br>3. other people's clips that were deleted or trimmed on the Hub are dropped here, with their `.npy`<br>4. clips on the Hub that aren't here yet are downloaded |
+
+Logged out or offline, clips are saved locally and the next sync uploads them. A clip you delete while
+offline comes back with the next sync; delete it again once online.
+
+Each computer splits the clips into train / val / test itself, so test scores from two computers aren't
+directly comparable. The clips show your faces: keep the repo private, and only record people who agreed.
+
+### The alphabet dataset on the Hub
+
+The same repo holds the DGS manual alphabet as photos, ready for an image classifier:
+`images/{train,validation,test}/<letter>/<letter>_p<person>_<photo>.jpg`, 27 letters (`a` … `z`, `sch`),
+12 people × 50 photos each. Hugging Face reads the split from the first folder and the label from the second.
+To get them:
+
+```bash
+.venv\Scripts\hf download Rakobra/sign-hands-german --repo-type dataset --include "images/*" --local-dir .
+```
+
+That puts them in this project under `images/train/`, `images/validation/`, `images/test/` (in `.gitignore`), next
+to the Alphabet tab's own photos in `images/<letter>/`, which aren't shared. With the `datasets` library you can
+also load them straight from the Hub: `load_dataset("Rakobra/sign-hands-german", "alphabet")`.
+
+It's split **by person** (train 1–8, validation 9 and 12, test 10 and 11), so the test score shows how well a
+model reads the hand shape of someone it has never seen. `import_alphabet.py` made it once from the original
+PNGs (Kaggle, by schauerstoff, **CC BY-SA 4.0**: credit the author and share anything built from it under the
+same license; see `images/SOURCE.md` on the Hub). The PNGs were then removed and are only in the repo's history. Nothing in this project trains on photos yet.
 
 ## 2. Convert the MP4s into a labelled dataset
 
@@ -186,5 +237,8 @@ A sign only counts as detected after it wins 10 predictions in a row with confid
 | `extract_dataset.py` | MP4s → labelled `.npy` dataset |
 | `train.py` | dataset → `model.keras` + `labels.txt` |
 | `detect.py` | webcam/MP4 → landmarks + output field + console + CSV |
-| `app.py` | Record / Alphabet / Clips / Training / Detect tabs in one window |
+| `app.py` | one window with the Record / Alphabet / Clips / Detect tabs |
+| `tabs/` | one module per tab, plus `common.py` for what they share |
+| `clip_sync.py` | shares `videos/` with the team's Hugging Face repo |
+| `import_alphabet.py` | one-off: the original alphabet PNGs (Hub history) → `images/<split>/<letter>/` on the Hub |
 | `test_app.py` | smoke checks: `python test_app.py` |

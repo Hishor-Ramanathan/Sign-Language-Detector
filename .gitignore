@@ -17,3 +17,6 @@ images/*
 !images/.gitkeep
 references/
 detections.csv
+
+# hf_hub_download bookkeeping for downloaded clips
+.cache/

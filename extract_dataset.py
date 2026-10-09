@@ -29,6 +29,13 @@ def extracted_path(root, label, stem):
     return None
 
 
+def forget_extracted(root, clip):
+    """Delete the clip's .npy so the next run rebuilds it from the changed clip."""
+    sample = extracted_path(root, clip.parent.name, clip.stem)
+    if sample:
+        sample.unlink()
+
+
 def choose_split(root, label):
     """The split of this label furthest below its share once one more sample is added."""
     counts = {split: len(list((root / split / label).glob("*.npy"))) for split in SPLITS}
