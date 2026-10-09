@@ -10,8 +10,10 @@ venv/
 # Local learning notes
 .vibe-wise/
 
-# Training clips stay local; runtime log
-videos/
-images/
+# Clips and photos stay local; only the empty folders are committed (.gitkeep); runtime log
+videos/*
+!videos/.gitkeep
+images/*
+!images/.gitkeep
 references/
 detections.csv
