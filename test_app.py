@@ -7,8 +7,9 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from app import ClipRecorder, clean_sign_name, forget_extracted, trim_clip
+from app import ClipRecorder, clean_sign_name, forget_extracted, number_clips, trim_clip
 from detect import STABLE_PREDICTIONS, SignDetector, draw_output_field, draw_probability_bars
+from extract_dataset import choose_split
 from landmarks import SEQUENCE_LENGTH
 
 
@@ -31,7 +32,7 @@ def check_record_trim_forget():
     for i in range(40):
         recorder.add(np.full((120, 160, 3), i * 5, np.uint8))
     path, frames, _ = recorder.stop()
-    assert path.parent == Path("videos/hallo") and frames == 40 and frame_count(path) == 40
+    assert path == Path("videos/hallo/hallo_001.mp4") and frames == 40 and frame_count(path) == 40
     assert not recorder.is_recording
     empty = ClipRecorder()
     empty.start("hallo")
@@ -40,11 +41,34 @@ def check_record_trim_forget():
     trim_clip(path, 5, 24)
     assert frame_count(path) == 20
 
-    npy = Path("dataset/hallo") / f"{path.stem}.npy"
+    npy = Path("dataset/val/hallo") / f"{path.stem}.npy"
     npy.parent.mkdir(parents=True)
     npy.touch()
     forget_extracted(path)
     assert not npy.exists()
+
+
+def check_number_clips():
+    folder, samples = Path("videos/danke"), Path("dataset/test/danke")
+    folder.mkdir(parents=True)
+    samples.mkdir(parents=True)
+    for name in ("b", "a", "danke_005"):
+        (folder / f"{name}.mp4").write_text(name)
+    (samples / "b.npy").write_text("b")
+    assert len(number_clips("danke")) == 3
+    assert [(f.name, f.read_text()) for f in sorted(folder.iterdir())] == [
+        ("danke_001.mp4", "a"), ("danke_002.mp4", "b"), ("danke_003.mp4", "danke_005")]
+    assert [(f.name, f.read_text()) for f in samples.iterdir()] == [("danke_002.npy", "b")]
+    assert number_clips("danke") == []  # already numbered: nothing moves
+
+
+def check_split_is_70_15_15(root=Path("split_check")):
+    for i in range(10):
+        sample = root / choose_split(root, "hallo") / "hallo" / f"{i}.npy"
+        sample.parent.mkdir(parents=True, exist_ok=True)
+        sample.touch()
+    counts = {split: len(list((root / split / "hallo").glob("*.npy"))) for split in ("train", "val", "test")}
+    assert counts == {"train": 7, "val": 2, "test": 1}, counts
 
 
 def check_detector_reports_each_sign_once():
@@ -71,6 +95,8 @@ if __name__ == "__main__":
     os.chdir(tempfile.mkdtemp())  # the app works relative to the current folder
     check_sign_names()
     check_record_trim_forget()
+    check_number_clips()
+    check_split_is_70_15_15()
     check_detector_reports_each_sign_once()
     check_overlay_draws()
     print("all checks passed")

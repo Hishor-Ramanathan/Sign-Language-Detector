@@ -4,9 +4,10 @@
 
 Tabs:
   Record  - webcam with face/hand landmarks. Pick or type a sign, then Record / Stop.
-            Clips are saved to videos/<sign>/<sign>_<timestamp>.mp4, the layout extract_dataset.py reads.
-            "Build dataset + Train" runs extract_dataset.py and then train.py.
+            Clips are saved to videos/<sign>/<sign>_001.mp4, _002, ..., the layout extract_dataset.py reads.
+            "Build dataset + Train" runs extract_dataset.py and then train.py; the status line shows the score.
   Clips   - every clip grouped by sign: play it, scrub through it, check hand tracking, trim it, delete it.
+            Opening the tab renumbers each sign's clips to <sign>_001.mp4, ... (covers clips copied in by hand).
   Detect  - live detection with the output field, same as detect.py.
 """
 import os
@@ -19,7 +20,6 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -27,6 +27,7 @@ import cv2
 from PIL import Image, ImageTk
 
 from detect import DetectionLog, load_detector
+from extract_dataset import extracted_path
 from landmarks import HolisticTracker, draw_face_and_hands, has_hands
 
 VIDEOS_DIR = Path("videos")
@@ -49,6 +50,38 @@ def list_signs():
 
 def list_clips(sign):
     return sorted((VIDEOS_DIR / sign).glob("*.mp4"))
+
+
+def clip_name(sign, number):
+    return VIDEOS_DIR / sign / f"{sign}_{number:03d}.mp4"  # 3 digits: name order stays number order up to 999
+
+
+def next_clip_path(sign):
+    number = len(list_clips(sign)) + 1
+    while clip_name(sign, number).exists():  # a gap left by a clip copied in by hand
+        number += 1
+    return clip_name(sign, number)
+
+
+def number_clips(sign):
+    """Rename the sign's clips to <sign>_001.mp4, _002, ... in name order; each clip's .npy follows it.
+    Returns the paths that were renamed.
+
+    Everything first moves to a temporary name, so no rename can land on a clip that hasn't moved yet
+    (hallo_002 -> hallo_001 while the old hallo_001 is still there)."""
+    moves = [(clip, clip_name(sign, number)) for number, clip in enumerate(list_clips(sign), start=1)]
+    moves = [(clip, target) for clip, target in moves if clip != target]
+    staged = []
+    for clip, target in moves:
+        sample = extracted_path(DATASET_DIR, sign, clip.stem)
+        if sample:
+            sample = sample.rename(sample.with_suffix(".renaming"))
+        staged.append((clip.rename(clip.with_suffix(".renaming")), sample, target))
+    for clip, sample, target in staged:
+        clip.rename(target)
+        if sample:
+            sample.rename(sample.with_name(f"{target.stem}.npy"))
+    return [clip for clip, _ in moves]
 
 
 def clip_seconds(path):
@@ -86,7 +119,9 @@ def trim_clip(path, first, last):
 
 def forget_extracted(path):
     """Delete the clip's .npy so extract_dataset.py rebuilds it from the changed clip."""
-    (DATASET_DIR / path.parent.name / f"{path.stem}.npy").unlink(missing_ok=True)
+    sample = extracted_path(DATASET_DIR, path.parent.name, path.stem)
+    if sample:
+        sample.unlink()
 
 
 # --- display helpers ----------------------------------------------------------------------------
@@ -138,7 +173,7 @@ class ClipRecorder:
         self._frames = None
         if not frames:
             return None
-        path = VIDEOS_DIR / self._sign / f"{self._sign}_{datetime.now():%Y%m%d_%H%M%S_%f}.mp4"
+        path = next_clip_path(self._sign)
         path.parent.mkdir(parents=True, exist_ok=True)
         fps = min(max(len(frames) / seconds, 1.0), 60.0)  # OpenCV silently writes nothing at absurd rates
         write_mp4(path, frames, fps)
@@ -189,6 +224,7 @@ class RecordTab(ttk.Frame):
         self._on_trained = on_trained
         self._recorder = ClipRecorder()
         self._job = TrainingJob()
+        self._score = ""  # latest score line from train.py, kept for the "done" status
 
         controls = ttk.Frame(self)
         controls.pack(fill="x")
@@ -255,6 +291,7 @@ class RecordTab(ttk.Frame):
             return
         self._train_button.configure(state="disabled")
         self._status.configure(text="Building dataset and training... (this can take a few minutes)")
+        self._score = "no score"
         self._job.start()
 
     def poll_training(self):
@@ -265,11 +302,14 @@ class RecordTab(ttk.Frame):
                 return
             if line is None:
                 self._train_button.configure(state="normal")
-                self._status.configure(text="Training done - open the Detect tab." if self._job.succeeded
-                                       else "Training failed - see the log below.")
+                self._status.configure(text=f"Training done, {self._score} - open the Detect tab."
+                                       if self._job.succeeded else "Training failed - see the log below.")
                 if self._job.succeeded:
                     self._on_trained()
                 continue
+            if line.startswith(("epoch ", "test accuracy")):  # score lines printed by train.py
+                self._score = line
+                self._status.configure(text=f"Training... {line}")
             self._log.configure(state="normal")
             self._log.insert("end", line + "\n")
             self._log.see("end")
@@ -317,6 +357,9 @@ class ClipsTab(ttk.Frame):
         self._info.pack(fill="x", pady=4)
 
     def refresh(self):
+        renamed = [old for sign in list_signs() for old in number_clips(sign)]
+        if self._path in renamed:  # its name now belongs to another clip; Trim/Delete must not hit that one
+            self._unload("Clips were renumbered. Select a clip on the left.")
         self._tree.delete(*self._tree.get_children())
         for sign in list_signs():
             clips = list_clips(sign)
@@ -443,14 +486,17 @@ class ClipsTab(ttk.Frame):
     def _delete(self):
         if not self._path or not messagebox.askyesno("Delete clip", f"Delete {self._path.name}? This can't be undone."):
             return
-        self.pause()
-        self._generation += 1  # stop its analysis
         self._path.unlink()
         forget_extracted(self._path)
-        self._frames, self._path = [], None
-        self._video.configure(image="", text="Clip deleted. Select another clip.")
-        self._info.configure(text="")
+        self._unload("Clip deleted. Select another clip.")
         self.refresh()
+
+    def _unload(self, message):
+        self.pause()
+        self._generation += 1  # stop its analysis
+        self._frames, self._path = [], None
+        self._video.configure(image="", text=message)
+        self._info.configure(text="")
 
 
 class DetectTab(ttk.Frame):

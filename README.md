@@ -17,14 +17,14 @@ the current MediaPipe **Tasks API** (`HolisticLandmarker`). The old `mp.solution
 project uses was retired in 2023 and is not in mediapipe releases after 0.10.21.
 
 ```
-videos/<sign>/*.mp4  --extract_dataset.py-->  dataset/<sign>/*.npy  --train.py-->  model.keras + labels.txt  --detect.py-->  output field
+videos/<sign>/*.mp4  --extract_dataset.py-->  dataset/{train,val,test}/<sign>/*.npy  --train.py-->  model.keras + labels.txt  --detect.py-->  output field
 ```
 
 ## Status
 
 | Sign | Clips in `videos/` | Converted to `dataset/` | Needed |
 |---|---|---|---|
-| `guten_tag` | 1 (`110276_GUTEN_TAG.mp4`: 75 frames, hands found in all 75) | 1 × `(30, 1692)` | 30+ |
+| `guten_tag` | 1 (`guten_tag_001.mp4`: 75 frames, hands found in all 75) | 1 × `(30, 1692)` in `train/` | 30+ |
 | `none` (other movements, idle hands) | 0 | 0 | 30+ |
 
 Training needs at least 30 clips per sign and at least 2 signs. Next steps:
@@ -56,8 +56,8 @@ One window with three tabs (Ctrl+Tab switches between them):
 
 | Tab | What you do there |
 |---|---|
-| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_<timestamp>.mp4`; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. **Build dataset + Train** runs `extract_dataset.py` and `train.py` and shows their output below the video. |
-| **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it. |
+| **Record** | Webcam with face/hand landmarks. Type a new sign (or pick one), press **● Record**, sign, press **■ Stop**. The clip is saved to `videos/<sign>/<sign>_001.mp4`, `_002`, …; the counter shows how many clips the sign has out of the 30 target. Clips are saved without the landmark drawing. **Build dataset + Train** runs `extract_dataset.py` and `train.py` and shows their output below the video; the status line shows the latest epoch score, then the test accuracy. |
+| **Clips** | Every clip, grouped by sign, with its length. Select one to watch it: **Play** loops it, the slider scrubs, **Show landmarks** overlays the tracking, and the status line says in how many frames hands were found. To cut a clip, move to the first good frame and press **Set start**, then to the last and press **Set end**; Play now loops just that part. **Save trim** overwrites the clip with it. **Delete clip** removes it. Both ask first and can't be undone; the clip's `.npy` is dropped so the next training re-extracts it. Opening the tab renumbers every sign's clips to `<sign>_001.mp4`, `_002`, … in name order (closing gaps after a delete, and naming clips copied in from a phone); each clip's `.npy` is renamed with it. |
 | **Detect** | Live detection with the output field, same as `detect.py`. Detections go to the console and `detections.csv`. |
 
 Sign names are cleaned into folder names: `Guten Tag` becomes `guten_tag`. A recording stops by itself after 20 s.
@@ -67,19 +67,19 @@ The sections below explain the same steps for the command-line scripts, and how 
 ## 1. Record your MP4s
 
 Make **one short clip per repetition of a sign**. Put the clips in a folder named after the sign.
-**The folder name is the label**, so the file names don't matter. `videos/` is in `.gitignore`, so
+**The folder name is the label**, so the file names don't matter; the app's Clips tab renames them to `<sign>_001.mp4`, … anyway. `videos/` is in `.gitignore`, so
 the clips stay on your machine and are never committed.
 
 ```
 videos/
-├── hello/
-│   ├── hello_01.mp4
-│   ├── hello_02.mp4
+├── hallo/
+│   ├── hallo_001.mp4
+│   ├── hallo_002.mp4
 │   └── ...
-├── thanks/
-│   ├── thanks_01.mp4
+├── danke/
+│   ├── danke_001.mp4
 │   └── ...
-└── iloveyou/
+└── guten_tag/
     └── ...
 ```
 
@@ -109,8 +109,20 @@ What happens for each `videos/<sign>/<clip>.mp4`:
 2. Each frame becomes one vector of **1692 numbers**:
    pose 33×(x,y,z,visibility) + left hand 21×(x,y,z) + right hand 21×(x,y,z) + face 478×(x,y,z).
    A body part that isn't found is all zeros.
-3. 30 frames spread evenly across the clip are kept and saved as `dataset/<sign>/<clip>.npy`
+3. 30 frames spread evenly across the clip are kept and saved as `dataset/<split>/<sign>/<clip>.npy`
    with shape `(30, 1692)`.
+
+Each sign is split 70 / 15 / 15 (`SPLITS` in `extract_dataset.py`):
+
+```
+dataset/
+├── train/<sign>/*.npy   the model learns from these
+├── val/<sign>/*.npy     scored after every epoch; early stopping keeps the best epoch
+└── test/<sign>/*.npy    scored once at the end, on clips the model never saw
+```
+
+A new sample goes to whichever split of its sign is furthest below its share. Samples never move once
+placed, so a test clip can't end up in training on a later run. With 10 clips a sign gets 7 / 2 / 1.
 
 Clips that already have a `.npy` are skipped, so you can add new videos and run it again.
 A line ending in `WARNING: hands rarely visible` means the hands were found in fewer than half the
@@ -123,8 +135,24 @@ python train.py                  # writes model.keras and labels.txt
 python train.py --epochs 300
 ```
 
-It uses the same LSTM as the original project. 10% of the clips are held out for validation, and
-training stops early once validation loss stops improving.
+It uses the same LSTM as the original project. It learns from `train/`, and training stops early
+once the loss on `val/` stops improving. Each epoch prints one score line:
+
+```
+epoch 12/500  accuracy 83%  loss 0.412  |  val accuracy 75%  val loss 0.550
+```
+
+At the end it prints the best epoch (its weights are the ones saved) and the **test accuracy**, per sign:
+
+```
+best epoch 40 (val accuracy 90%)
+test accuracy 88% (7/8 correct)
+  danke: 4/4
+  hallo: 3/4
+```
+
+`accuracy` is on clips the model learns from, so it climbs towards 100% anyway. The test accuracy is
+the honest number. Training stops with a message until `val/` and `test/` each have a sample.
 
 ## 4. Detect
 
